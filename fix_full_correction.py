@@ -36,7 +36,7 @@ for file in fits_files:
         continue
 
     region_dir = (
-        Path("/home/alst3712/clean_data")
+        Path("/home/alst3712/exocomet_project/clean_data")
         / date_dir
         / "order_regions"
     )
@@ -76,27 +76,27 @@ def load_all_orders(path):
 #         automatic_region_half_width_pixels=20, #default is 12
 #     )
 
-    try:
-        selector.add_automatic_fit_regions(400)  # Per order; overlapping windows are merged.
-        selector.save(path)
-    finally:
-        selector.close()
+    # try:
+    #     selector.add_automatic_fit_regions(400)  # Per order; overlapping windows are merged.
+    #     selector.save(path)
+    # finally:
+    #     selector.close()
 
 # %%
 
-def process_file(FILE, DIR):
+def process_file(FILE, DIR, start_pixel, end_pixel):
     date_dir = FILE.parent.parent.name
     print(
         f" Starting {date_dir}",
         flush=True,
     )
 
-    orders = load_all_orders(FILE)
+    #orders = load_all_orders(FILE)
     corrected_orders = []
 
     DIR.mkdir(exist_ok=True)
 
-    output_file = DIR / f"tellurics_corrected_updated_pymol_{FILE.parent.parent.name}.dat"
+    output_file = DIR / f"tellurics_corrected_updated_pymol_{FILE.parent.parent.name}_test.dat"
 
     temp_file = output_file.with_suffix(".dat.tmp")
 
@@ -104,73 +104,60 @@ def process_file(FILE, DIR):
         print(f"Corrected spectrum already exists at {output_file}. Skipping correction.")
         return "output exists"
 
-    for index, (name, spectrum) in enumerate(orders.items(), 1):
+    #for index, (name, spectrum) in enumerate(orders.items(), 1):
+    with fits.open(FILE) as hdus:
+        for chip, hdu in enumerate(hdus[1:], 1):
+            wl_columns = []
+            spec_columns = []
+            for name in hdu.columns.names:
+                if name.endswith("_WL"):
+                    wl_columns.append(name)
+                elif name.endswith("_SPEC"):
+                    spec_columns.append(name)
 
-        print(
-                f"{date_dir}: order {index}/{len(orders)} "
-                f"({name})",
-                flush=True,
-            )
+            for wl, spec in zip(wl_columns[:2], spec_columns[:2]):
+                print(f"working on chip {chip}, order {wl.removesuffix("_01_WL")}")
+                try:
+                    result = correct(
+                        input_path=FILE,
+                        hdu=chip,
+                        wavelength_col=wl,
+                        flux_col=spec,
+                        wavelength_medium='vacuum',
+                        wavelength_unit='nm',
+                        #region_file=region_file, 
+                        #auto_segment=True, #``True`` separates FITS orders/detectors and wavelength discontinuities into physical groups, then divides wide groups into bounded radiative-transfer chunks. Molecular columns remain global, continuum coefficients remain local to numerical chunks, and automatic wavelength polynomials are shared across every chunk from the same physical group. ``False`` fits the input as one segment and may exceed grid limits.
+                        #segment_size=0.01, # in microns, maximum numerical radiative-transfer chunk width in microns
+                        #continuum_order=2, #
+                        #solve_continuum_linear=True, #`True`` always selects this stable profiled approach, while ``False`` includes continuum coefficients in the nonlinear parameter vector
+                        #loss="soft_l1", # soft_l1 is standard in new version; Controls how residuals influence the fit. ``linear`` is ordinary squared-residual least squares and is the statistically preferred default for a clean, well-masked spectrum with reliable uncertainties. ``soft_l1`` is usually appropriate for a mostly clean spectrum containing a limited number of cosmic rays, bad pixels, or unmasked spectral features because it reduces their influence without ignoring normal residuals. ``huber`` is another moderate robust loss, while ``cauchy`` and ``arctan`` suppress large outliers more strongly. Robust loss cannot repair generally poor calibration, wavelength misalignment, incorrect uncertainties, or an unsuitable atmospheric model.
+                        #f_scale=1.0, #Residual scale separating normal points from downweighted outliers for robust losses;
+                        #fit_wavelength_shift=False, 
+                        #fit_segment_wavelength_polynomial=True, # ``True`` fits one wavelength-correction polynomial per detected physical order/detector group and shares it across that group's numerical chunks; use this when line residuals show within-order wavelength distortion, and do not combine it with global or constant per-group wavelength fitting.
+                        #segment_wavelength_polynomial_order=2, #Degree of each physical-group wavelength polynomial
+                        #wavelength_shift_bounds=(-0.0002, 0.0002),  # Microns: +/-0.2 nm. ``None`` uses ``(-3, 3)`` detector pixels for automatic model selection or the legacy micron bounds for explicit wavelength models; supplied values are pixels in automatic mode and microns in explicit mode.
+                        #lsf_sigma_pixels="auto", #
+                        #fit_lsf_sigma=True, # ``"auto"`` refines an automatically estimated ``lsf_sigma_pixels`` when telluric lines are available but keeps an explicitly numeric sigma fixed; ``True`` always fits Gaussian sigma and ``False`` always keeps the resolved value fixed.
+                        #high_resolution_grid=True, # ``True`` computes, convolves, and rebins an oversampled internal model; ``False`` evaluates directly at observed samples.
+                        #high_resolution_oversampling=5, #Approximate internal samples per observed pixel when ``high_resolution_grid=True``.
+                        #min_transmission=0.1,  # Leave near-opaque absorption uncorrected (NaN).
+                    )   
 
-        
-        
-        # region_file = DIR / f"{name}.ecsv" #note to self - ecsv can store stuff like units and can be used to write astropy tables
-        # make_region_file(spectrum, region_file)
+                except Exception as exc:
+                        print(
+                            f"FAILED: "
+                            f"file={date_dir}, order={wl}, "
+                            f"error={type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
+                        continue
 
-        wave = np.asarray(spectrum.wavelength)
-        fluxvals = np.asarray(spectrum.flux)
+                corrected = result.corrected.to_unit("nm")
 
-        print(f"flux range = {np.nanmin(fluxvals):.3f}–{np.nanmax(fluxvals):.3f} ")
-        print(f'last few values are {fluxvals[len(fluxvals)-15:]}')
-        print(
-            f"{name}: "
-            f"spectrum = {np.nanmin(wave):.3f}–{np.nanmax(wave):.3f} "
-            f"{spectrum.wavelength_unit}, "
-            #f"regions = {region_file}"
-        )
-
-        try:
-            result = correct(
-                input_path=FILE,
-                hdu=1,
-                wavelength_col="03_01_WL",
-                flux_col="03_01_SPEC",
-                input_path=spectrum,
-                wavelength_col=wave,
-                flux_col = fluxvals
-                #region_file=region_file, 
-                #auto_segment=True, #``True`` separates FITS orders/detectors and wavelength discontinuities into physical groups, then divides wide groups into bounded radiative-transfer chunks. Molecular columns remain global, continuum coefficients remain local to numerical chunks, and automatic wavelength polynomials are shared across every chunk from the same physical group. ``False`` fits the input as one segment and may exceed grid limits.
-                #segment_size=0.01, # in microns, maximum numerical radiative-transfer chunk width in microns
-                #continuum_order=2, #
-                #solve_continuum_linear=True, #`True`` always selects this stable profiled approach, while ``False`` includes continuum coefficients in the nonlinear parameter vector
-                #loss="soft_l1", # soft_l1 is standard in new version; Controls how residuals influence the fit. ``linear`` is ordinary squared-residual least squares and is the statistically preferred default for a clean, well-masked spectrum with reliable uncertainties. ``soft_l1`` is usually appropriate for a mostly clean spectrum containing a limited number of cosmic rays, bad pixels, or unmasked spectral features because it reduces their influence without ignoring normal residuals. ``huber`` is another moderate robust loss, while ``cauchy`` and ``arctan`` suppress large outliers more strongly. Robust loss cannot repair generally poor calibration, wavelength misalignment, incorrect uncertainties, or an unsuitable atmospheric model.
-                #f_scale=1.0, #Residual scale separating normal points from downweighted outliers for robust losses;
-                #fit_wavelength_shift=False, 
-                #fit_segment_wavelength_polynomial=True, # ``True`` fits one wavelength-correction polynomial per detected physical order/detector group and shares it across that group's numerical chunks; use this when line residuals show within-order wavelength distortion, and do not combine it with global or constant per-group wavelength fitting.
-                #segment_wavelength_polynomial_order=2, #Degree of each physical-group wavelength polynomial
-                #wavelength_shift_bounds=(-0.0002, 0.0002),  # Microns: +/-0.2 nm. ``None`` uses ``(-3, 3)`` detector pixels for automatic model selection or the legacy micron bounds for explicit wavelength models; supplied values are pixels in automatic mode and microns in explicit mode.
-                #lsf_sigma_pixels="auto", #
-                #fit_lsf_sigma=True, # ``"auto"`` refines an automatically estimated ``lsf_sigma_pixels`` when telluric lines are available but keeps an explicitly numeric sigma fixed; ``True`` always fits Gaussian sigma and ``False`` always keeps the resolved value fixed.
-                #high_resolution_grid=True, # ``True`` computes, convolves, and rebins an oversampled internal model; ``False`` evaluates directly at observed samples.
-                #high_resolution_oversampling=5, #Approximate internal samples per observed pixel when ``high_resolution_grid=True``.
-                #min_transmission=0.1,  # Leave near-opaque absorption uncorrected (NaN).
-            )
-
-        except Exception as exc:
-                print(
-                    f"FAILED: "
-                    f"file={date_dir}, order={name}, "
-                    f"error={type(exc).__name__}: {exc}",
-                    flush=True,
-                )
-                continue
-
-        corrected = result.corrected.to_unit("nm")
-
-        corrected_orders.append(np.column_stack((
-                                corrected.wavelength,
-                                corrected.flux,
-                                corrected.uncertainty)))
+                corrected_orders.append(np.column_stack((
+                                    corrected.wavelength[start_pixel:end_pixel],
+                                    corrected.flux[start_pixel:end_pixel],
+                                    corrected.uncertainty[start_pixel:end_pixel])))
 
 
     corrected_data = np.vstack(corrected_orders)
@@ -188,10 +175,10 @@ def process_file(FILE, DIR):
     return f'Success! {date_dir} completed'
 
 
-n_jobs = 1
+n_jobs = len(observations)
 if __name__ == '__main__':
     if observations:
-        results = Parallel(n_jobs = n_jobs)(delayed(process_file)(FILE, DIR) for FILE, DIR in observations)
+        results = Parallel(n_jobs = n_jobs)(delayed(process_file)(FILE, DIR, 40, -40) for FILE, DIR in observations)
 
     print(
         f"\nTotal time taken: "
