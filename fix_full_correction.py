@@ -5,7 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
-from pymolfit import Spectrum, correct, select_telluric_regions
+from pymolfit import Spectrum, correct, select_telluric_regions, AdvancedOptions
 #from plotting_params import use_my_style
 import time
 #use_my_style()
@@ -86,53 +86,57 @@ def load_all_orders(path):
 
 def process_file(FILE, DIR, start_pixel, end_pixel):
     date_dir = FILE.parent.parent.name
-    print(
-        f" Starting {date_dir}",
-        flush=True,
-    )
+
 
     #orders = load_all_orders(FILE)
     corrected_orders = []
 
     DIR.mkdir(exist_ok=True)
 
-    output_file = DIR / f"tellurics_corrected_updated_pymol_{FILE.parent.parent.name}_test.dat"
+    output_file = DIR / f"tellurics_corrected_updated_pymol_{FILE.parent.parent.name}_segment_size_test5_more_orders.dat"
 
     temp_file = output_file.with_suffix(".dat.tmp")
 
-    if output_file.exists() and os.access(output_file, os.R_OK):
-        print(f"Corrected spectrum already exists at {output_file}. Skipping correction.")
-        return "output exists"
+    # if output_file.exists() and os.access(output_file, os.R_OK):
+    #     print(f"Corrected spectrum already exists at {output_file}. Skipping correction.")
+    #     return "output exists"
 
     #for index, (name, spectrum) in enumerate(orders.items(), 1):
     with fits.open(FILE) as hdus:
         for chip, hdu in enumerate(hdus[1:], 1):
             wl_columns = []
             spec_columns = []
+            err_columns = []
             for name in hdu.columns.names:
                 if name.endswith("_WL"):
                     wl_columns.append(name)
                 elif name.endswith("_SPEC"):
                     spec_columns.append(name)
+                elif name.endswith("_ERR"):
+                    err_columns.append(name)
 
-            for wl, spec in zip(wl_columns[:2], spec_columns[:2]):
-                print(f"working on chip {chip}, order {wl.removesuffix("_01_WL")}")
+            for wl, spec, err in zip(wl_columns[:2], spec_columns[:2], err_columns[:2]):
+                print(f"working on chip {chip}, order {wl.removesuffix("_01_WL")} ({date_dir})")
                 try:
                     result = correct(
                         input_path=FILE,
                         hdu=chip,
                         wavelength_col=wl,
                         flux_col=spec,
+                        uncertainty_col= err,
                         wavelength_medium='vacuum',
                         wavelength_unit='nm',
+                        advanced=AdvancedOptions(segment_size=0.01)
+                        #min_transmission=0.1,
+                        #advanced = AdvancedOptions(wavelength_shift_bounds=(-0.2, 0.2)),
                         #region_file=region_file, 
                         #auto_segment=True, #``True`` separates FITS orders/detectors and wavelength discontinuities into physical groups, then divides wide groups into bounded radiative-transfer chunks. Molecular columns remain global, continuum coefficients remain local to numerical chunks, and automatic wavelength polynomials are shared across every chunk from the same physical group. ``False`` fits the input as one segment and may exceed grid limits.
                         #segment_size=0.01, # in microns, maximum numerical radiative-transfer chunk width in microns
                         #continuum_order=2, #
                         #solve_continuum_linear=True, #`True`` always selects this stable profiled approach, while ``False`` includes continuum coefficients in the nonlinear parameter vector
-                        #loss="soft_l1", # soft_l1 is standard in new version; Controls how residuals influence the fit. ``linear`` is ordinary squared-residual least squares and is the statistically preferred default for a clean, well-masked spectrum with reliable uncertainties. ``soft_l1`` is usually appropriate for a mostly clean spectrum containing a limited number of cosmic rays, bad pixels, or unmasked spectral features because it reduces their influence without ignoring normal residuals. ``huber`` is another moderate robust loss, while ``cauchy`` and ``arctan`` suppress large outliers more strongly. Robust loss cannot repair generally poor calibration, wavelength misalignment, incorrect uncertainties, or an unsuitable atmospheric model.
+                        ##loss="soft_l1", # soft_l1 is standard in new version; Controls how residuals influence the fit. ``linear`` is ordinary squared-residual least squares and is the statistically preferred default for a clean, well-masked spectrum with reliable uncertainties. ``soft_l1`` is usually appropriate for a mostly clean spectrum containing a limited number of cosmic rays, bad pixels, or unmasked spectral features because it reduces their influence without ignoring normal residuals. ``huber`` is another moderate robust loss, while ``cauchy`` and ``arctan`` suppress large outliers more strongly. Robust loss cannot repair generally poor calibration, wavelength misalignment, incorrect uncertainties, or an unsuitable atmospheric model.
                         #f_scale=1.0, #Residual scale separating normal points from downweighted outliers for robust losses;
-                        #fit_wavelength_shift=False, 
+                        #fit_wavelength_shift=False, #i.e., fit all the regions the same. This one is false so the next one can be true
                         #fit_segment_wavelength_polynomial=True, # ``True`` fits one wavelength-correction polynomial per detected physical order/detector group and shares it across that group's numerical chunks; use this when line residuals show within-order wavelength distortion, and do not combine it with global or constant per-group wavelength fitting.
                         #segment_wavelength_polynomial_order=2, #Degree of each physical-group wavelength polynomial
                         #wavelength_shift_bounds=(-0.0002, 0.0002),  # Microns: +/-0.2 nm. ``None`` uses ``(-3, 3)`` detector pixels for automatic model selection or the legacy micron bounds for explicit wavelength models; supplied values are pixels in automatic mode and microns in explicit mode.
@@ -175,10 +179,10 @@ def process_file(FILE, DIR, start_pixel, end_pixel):
     return f'Success! {date_dir} completed'
 
 
-n_jobs = len(observations)
+n_jobs = 2
 if __name__ == '__main__':
     if observations:
-        results = Parallel(n_jobs = n_jobs)(delayed(process_file)(FILE, DIR, 40, -40) for FILE, DIR in observations)
+        results = Parallel(n_jobs = n_jobs)(delayed(process_file)(FILE, DIR, 40, -40) for FILE, DIR in observations[2:4])
 
     print(
         f"\nTotal time taken: "

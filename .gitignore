@@ -1,2 +1,4 @@
 /clean_data
 /Opacity_spectra
+/__pycache__
+/utils
