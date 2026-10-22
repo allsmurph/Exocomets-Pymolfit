@@ -5,12 +5,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
+import pymolfit
 from pymolfit import Spectrum, correct, select_telluric_regions, AdvancedOptions
 #from plotting_params import use_my_style
 import time
 #use_my_style()
 from joblib import Parallel, delayed
-
+pymolfit_version = pymolfit.__version__
+print(pymolfit_version)
 
 start_time = time.time()
 
@@ -93,7 +95,7 @@ def process_file(FILE, DIR, start_pixel, end_pixel):
 
     DIR.mkdir(exist_ok=True)
 
-    output_file = DIR / f"tellurics_corrected_updated_pymol_{FILE.parent.parent.name}_segment_size_test5_more_orders.dat"
+    output_file = DIR / f"tellurics_corrected_version_{pymolfit_version}_{FILE.parent.parent.name}_base.dat"
 
     temp_file = output_file.with_suffix(".dat.tmp")
 
@@ -126,7 +128,7 @@ def process_file(FILE, DIR, start_pixel, end_pixel):
                         uncertainty_col= err,
                         wavelength_medium='vacuum',
                         wavelength_unit='nm',
-                        advanced=AdvancedOptions(segment_size=0.01)
+                        #advanced=AdvancedOptions(segment_size=0.01)
                         #min_transmission=0.1,
                         #advanced = AdvancedOptions(wavelength_shift_bounds=(-0.2, 0.2)),
                         #region_file=region_file, 
