@@ -15,8 +15,8 @@ from astropy import constants as astro_const
 from astropy import units as u
 from cross_correlation_mod import cross_correlate
 
-while not os.path.exists("utils"):
-    os.chdir("..")
+# while not os.path.exists("utils"):
+#     os.chdir("..")
 # print("Current working directory:", os.getcwd())
 sys.path.append(os.getcwd())
 
@@ -25,8 +25,8 @@ from utils import Task, FancyIter, cstr, Message, ccf_mask, FancyArg, Velocity
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 #_default_model = "data/MODELS/prt-flux_wl-2800nm-4800nm_species-H2O_vmr-1.00e-04_temp-1700K_rad-1.65_logg-4.18_kIR-5.0e-03_rot-20.0kms-0.81_planet-b.csv"
-_default_model = "/home/alst3712/exocomet_project/toy_data/model_1000K_1e+18_0.8cf.csv"
-peak_kms = 0 #70 # parker et al. 70km/s
+_default_model = "/home/alst3712/exocomet_project/co_template_weighted.csv"
+peak_kms = 70 # parker et al. 70km/s
 #double_factor = 2 # multiplies the weight of the observation if it is in the list of double_obs
 
 
@@ -105,17 +105,24 @@ def compute_ccfs(spectra, errors, chunk_labels, chunk_contrast_models, velocitie
                     f'{chunk_label}.flux.no_baseline', # not used
                     f'{chunk_label}.flux'
                 ]].dropna()
-                chunk_windows.append((chunk[f'{chunk_label}.wavelength'].min(), chunk[f'{chunk_label}.wavelength'].max()))
+                chunk = (chunk.sort_values(f'{chunk_label}.wavelength')
+                .drop_duplicates(subset=f'{chunk_label}.wavelength')
+                .reset_index(drop=True))   
+
+                chunk_windows.append((chunk[f'{chunk_label}.wavelength'].min()-10, chunk[f'{chunk_label}.wavelength'].max()+10))
                 # get the model at the corresponding wavelengths and the errors
                 try: model = chunk_contrast_models[chunk_label]
                 except KeyError:
                     print(f"[ WARNING ] No model for {chunk_label}")
                     continue
                 model = model[model['wavelength'].between(*chunk_windows[-1])]
+                model = model.sort_values('wavelength').reset_index(drop=True)   # <-- new
                 if(model.empty): print(f'[ WARNING ]: no model avaible for chunk window {chunk_windows[-1]}')
                 error = errors[chunk_label]['error']
                 error_wave = errors[chunk_label]['wavelength']
-                error = np.interp(chunk[f'{chunk_label}.wavelength'], error_wave, error)
+                order = np.argsort(error_wave)                          # <-- new
+                error = np.interp(chunk[f'{chunk_label}.wavelength'], np.asarray(error_wave)[order], np.asarray(error)[order])
+                #error = np.interp(chunk[f'{chunk_label}.wavelength'], error_wave, error)
                 if((chunk[f'{chunk_label}.wavelength'].min()>4000) & (np.std(chunk[f"{chunk_label}.flux"])<1e-4)): info_weights = 0 # for CO2 absorptions and ultra-noisy chunks
                 else:
                     model_mask_interp = np.interp(chunk[f'{chunk_label}.wavelength'], model['wavelength'], model['weight.mask'])
@@ -194,7 +201,7 @@ with FancyArg.create("Compute the weighted cross-correlation function of the dif
     
     #Changed
     FancyArg(
-        "f", type=str, default="/home/alst3712/exocomet_project/toy_data/fake_data_1000K_1e+18_0.8cf_47.47SNR_preprocessed.csv", help="File or folder (not just the name, the entire path). If file, must be a .csv file, output of merge_observations.py. If folder, all the available .csv files at the root of the folder (where the output of merge_observations.py are) will be processed."
+        "f", type=str, default="/home/alst3712/exocomet_project/clean_data/tellurics_corrected_version_0.8.3_2025-09-27_M4318_base_preprocessed_allspectra.csv", help="File or folder (not just the name, the entire path). If file, must be a .csv file, output of merge_observations.py. If folder, all the available .csv files at the root of the folder (where the output of merge_observations.py are) will be processed."
     )
     FancyArg(
         "model", default = _default_model, help = f"The path to the precomputed model to cross-correlate with. Last letter of model filename fixes the planet."
@@ -212,7 +219,7 @@ with FancyArg.create("Compute the weighted cross-correlation function of the dif
     )
     # different SNR evaluation
     FancyArg(
-        "anti_SNR", type=bool, default=True, help="The evaluation of the SNR is performed using the signal from the other side of the star and not using the tails of the CCF."
+        "anti_SNR", type=bool, default=False, help="The evaluation of the SNR is performed using the signal from the other side of the star and not using the tails of the CCF."
     )
     # for molecules subtraction
     FancyArg(
@@ -252,20 +259,20 @@ with Task("Creating the velocity array", new_line=True):
 vmr = 'bho'
 # vmr = MODEL.split("/")[-1].split("_")[3]
 # vmr = vmr.split("-")[1] + "-" + vmr.split("-")[2]
-SPECIES = MODEL.split("/")[-1].split("_")[2].split("-")[1:]
+SPECIES = ['CO']
 EXOTIC_MOL = not(('H2O' in SPECIES) or ('CO' in SPECIES))
-#EXOTIC_MOL = False
+EXOTIC_MOL = False
 
-if(len(SUBTRACT)>0):
-    SUBTRACT = [float(sub) for sub in SUBTRACT]
-    weight_path = os.path.dirname(file_or_folder)+f"/weights/w_dict_ref_H2O.csv"
-    assert os.path.exists(weight_path), f"File {weight_path} doesn't exist. Please generate the file."
-    SNR_sub = pd.read_csv(weight_path, index_col=0, sep=' ')
+# if(len(SUBTRACT)>0):
+#     SUBTRACT = [float(sub) for sub in SUBTRACT]
+#     weight_path = os.path.dirname(file_or_folder)+f"/weights/w_dict_ref_H2O.csv"
+#     assert os.path.exists(weight_path), f"File {weight_path} doesn't exist. Please generate the file."
+#     SNR_sub = pd.read_csv(weight_path, index_col=0, sep=' ')
 
-if(EXOTIC_MOL):
-    weight_path = os.path.dirname(file_or_folder)+f"/weights/w_dict_ref_H2O.csv"
-    assert os.path.exists(weight_path), f"File {weight_path} doesn't exist. Please generate the file."
-    SNR_sub = pd.read_csv(weight_path, index_col=0, sep=' ')
+# if(EXOTIC_MOL):
+#     weight_path = os.path.dirname(file_or_folder)+f"/weights/w_dict_ref_H2O.csv"
+#     assert os.path.exists(weight_path), f"File {weight_path} doesn't exist. Please generate the file."
+#     SNR_sub = pd.read_csv(weight_path, index_col=0, sep=' ')
 
 #################################################################################################################################################################################################################################
 
@@ -327,7 +334,7 @@ chunk_labels = [chunk_label for chunk_label in chunk_labels if not chunk_label[:
 ##################################
 
 
-COMPUTE_WITH_CONTRAST = 'stellar_flux' in model.columns
+COMPUTE_WITH_CONTRAST = False #'stellar_flux' in model.columns
 
 if not COMPUTE_WITH_CONTRAST:
     Message(f"Model {cstr(os.path.basename(MODEL)):r} does not contain a stellar flux", "!")
@@ -338,53 +345,53 @@ else:
 
 
 chunk_contrast_models = {} # we use the same model for all, but the stellar spectrum is different for each chunk (shifted depnding on the planet rad_vel, depending on date)
-model_baseline = model['flux'] - model['flux.no_baseline']
+model_baseline = model['flux'] #- model['flux.no_baseline']
 with Task("Transforming flux to contrast", new_line=False):
     for i, chunk_label in enumerate(chunk_labels):
 
         if not COMPUTE_WITH_CONTRAST:
             chunk_contrast_models[chunk_label] = pd.DataFrame({
                 'wavelength':model['wavelength'],
-                'contrast.no_baseline':model['flux.no_baseline'], # /!\ this is no contrast, but contrast cannot be used!
+                'contrast.no_baseline':model['flux'], #model['flux.no_baseline'], # /!\ this is no contrast, but contrast cannot be used!
                 'weight.mask':model['weight.mask'],
                 'weight.smooth':model['weight.smooth']
             })
             continue
 
-        date = chunk_label.split('_')[0]
-        #planet_vel = Velocity.get(PLANET, date)['vrad_planet'] # we need that to know how to shift the stellar spectrum relative to the planet
-        # this was the relative radial velocity between planet and star
+#         date = chunk_label.split('_')[0]
+#         #planet_vel = Velocity.get(PLANET, date)['vrad_planet'] # we need that to know how to shift the stellar spectrum relative to the planet
+#         # this was the relative radial velocity between planet and star
 
-        stellar_spectrum = model[
-            ['wavelength', 'stellar_flux', 'stellar_flux.baseline']
-        ].copy(deep=True)
+#         stellar_spectrum = model[
+#             ['wavelength', 'flux']
+#         ].copy(deep=True)
 
-        # let's apply the correct doppler shift
-        #z = planet_vel / astro_const.c.to(u.km/u.s).value
-        #stellar_spectrum['wavelength'] = stellar_spectrum['wavelength'] * (1 + z)**(-1) # doing this changes absolutely nothing, the H absorption peaks in the stellar spectrum are wide enough to not be affected by the doppler shift
-        # justification for doppler shift (for beta pic b):
-        # => z > 0 because picB goes away
-        # => here we are in ref of picB, so * gets closer => blue shift
-        # => wl must decrease, but 1+z>1 so we must divide by it #
-        #stellar_spectrum = pd.DataFrame({
-        #    'wavelength':model['wavelength'], # let's map it back on the initial model wavelengths
-        #    'stellar_flux':np.interp(model['wavelength'], stellar_spectrum['wavelength'], stellar_spectrum['stellar_flux']),
-        #    'stellar_flux.baseline':np.interp(model['wavelength'], stellar_spectrum['wavelength'], stellar_spectrum['stellar_flux.baseline'])
-        #})
+#         # let's apply the correct doppler shift
+#         #z = planet_vel / astro_const.c.to(u.km/u.s).value
+#         #stellar_spectrum['wavelength'] = stellar_spectrum['wavelength'] * (1 + z)**(-1) # doing this changes absolutely nothing, the H absorption peaks in the stellar spectrum are wide enough to not be affected by the doppler shift
+#         # justification for doppler shift (for beta pic b):
+#         # => z > 0 because picB goes away
+#         # => here we are in ref of picB, so * gets closer => blue shift
+#         # => wl must decrease, but 1+z>1 so we must divide by it #
+#         #stellar_spectrum = pd.DataFrame({
+#         #    'wavelength':model['wavelength'], # let's map it back on the initial model wavelengths
+#         #    'stellar_flux':np.interp(model['wavelength'], stellar_spectrum['wavelength'], stellar_spectrum['stellar_flux']),
+#         #    'stellar_flux.baseline':np.interp(model['wavelength'], stellar_spectrum['wavelength'], stellar_spectrum['stellar_flux.baseline'])
+#         #})
 
-        contrast = model['flux'] / stellar_spectrum['stellar_flux']
-        contrast_no_baseline = contrast - model_baseline / stellar_spectrum['stellar_flux'] # the second part here is very smooth, don't worry about it!
-        contrast_no_baseline_fake = contrast - model_baseline / stellar_spectrum['stellar_flux.baseline'] # this removes effectively the baseline but not the features linked to stllar absorption peaks, who help improve the SNR
+#         contrast = model['flux'] / stellar_spectrum['flux']
+#         contrast_no_baseline = contrast - model_baseline / stellar_spectrum['flux'] # the second part here is very smooth, don't worry about it!
+#         #contrast_no_baseline_fake = contrast - model_baseline / stellar_spectrum['stellar_flux.baseline'] # this removes effectively the baseline but not the features linked to stllar absorption peaks, who help improve the SNR
 
-        chunk_contrast_models[chunk_label] = pd.DataFrame({
-            'wavelength':model['wavelength'],
-            'contrast.no_baseline': contrast, # /!\ contrast_no_baseline lowers significantly the SNR => contrast_no_baseline_fake is almost identical to contrast in terms of SNR, so its really the stellar features that matter
-            'weight.mask':model['weight.mask'],
-            'weight.smooth':model['weight.smooth'],
-            'weight': model['weight'],
-            'sub': contrast_no_baseline_fake,
-            'pseudo_contrast': pd.Series(contrast.to_numpy()[::-1]) # is used to remove systematics
-        }) # only flux of model is used. If instead use flux.no_baseline, please modify run_mcmc.py in get_broadened_model()
+#         chunk_contrast_models[chunk_label] = pd.DataFrame({
+#             'wavelength':model['wavelength'],
+#             'contrast.no_baseline': contrast, # /!\ contrast_no_baseline lowers significantly the SNR => contrast_no_baseline_fake is almost identical to contrast in terms of SNR, so its really the stellar features that matter
+#             'weight.mask':model['weight.mask'],
+#             'weight.smooth':model['weight.smooth'],
+#             'weight': model['weight'],
+#             #'sub': contrast_no_baseline_fake,
+#             'pseudo_contrast': pd.Series(contrast.to_numpy()[::-1]) # is used to remove systematics
+#         }) # only flux of model is used. If instead use flux.no_baseline, please modify run_mcmc.py in get_broadened_model()
 
 
 #with open("model_dict.pkl", "wb") as f:
@@ -405,9 +412,9 @@ if ANTI_SNR and not(EXOTIC_MOL) and anti_spectra is not None:
     anti_errors = compute_errors(anti_spectra, anti_chunk_labels)
     anti_w_dict = compute_ccfs(anti_spectra, anti_errors, anti_chunk_labels, chunk_contrast_models, velocities, WEIGHT)
 # autocorrelation
-elif(EXOTIC_MOL):
-    Message("Autocorrelation...", "#")
-    anti_w_dict = compute_ccfs(spectra, errors, chunk_labels, chunk_contrast_models, velocities, WEIGHT, autocorrelation=True)
+# elif(EXOTIC_MOL):
+#     Message("Autocorrelation...", "#")
+#     anti_w_dict = compute_ccfs(spectra, errors, chunk_labels, chunk_contrast_models, velocities, WEIGHT, autocorrelation=True)
 
 ################################
 ### Compute the weighted CCF ###
@@ -428,6 +435,7 @@ with Task("Computing the weights..."):
             # let's compute the weighted CCF of each chunk within a spectral setting
             ccfs = np.array([w_dict[k] for k in keys if 'ccfs' in k])
             weights = np.array([w_dict[k] for k in keys if 'weight' in k])
+            print('sum of weights', weights.sum())
             noise = np.array([w_dict[k] for k in keys if 'noise' in k])
             if(weights.sum()==0):
                 w_dict[f'{spectral_setting}.snr'] = 0
@@ -456,6 +464,7 @@ with Task("Computing the weights..."):
                 Message("Failed to fit a parable to the CCF's tails", "i")
                 noise_est = np.zeros_like(velocities)
             ccf_clean = ccf - noise_est
+            print('ccf clean max is', np.max(ccf_clean))
 
             # when looking for significant molecules (e.g. H2O, CO), the merge is based on the spectral setting's SNR. But when we look for 'exotic' species, we can't do that because the SNR might be too low
             if(not(EXOTIC_MOL)):
@@ -468,10 +477,12 @@ with Task("Computing the weights..."):
                         noise_est = np.zeros_like(velocities)
                     anti_ccf_clean = anti_ccf - noise_est
                     snr = ccf_clean[peak_in].max()/anti_ccf_clean[~peak_out].std()
-                else: snr = ccf_clean[peak_in].max() / ccf_clean[~peak_out].std()
+                else:
+                    snr = ccf_clean[peak_in].max() / ccf_clean[~peak_out].std()
+                    print('after dividing out the snr is', snr)
             # exotic molecules
-            else:
-                snr = SNR_sub.loc[f"{spectral_setting}.correction_factor"].to_numpy() * (np.nansum(weights/noise))  # correction factor
+            # else:
+            #     snr = SNR_sub.loc[f"{spectral_setting}.correction_factor"].to_numpy() * (np.nansum(weights/noise))  # correction factor
                 if(ANTI_SNR):
                     try:
                         popt, pcov = curve_fit(Parable, velocities[~peak_out], anti_ccf[~peak_out])
@@ -487,15 +498,17 @@ with Task("Computing the weights..."):
 #                snr = anti_ccf_clean[peak_in].max() / noise_ccf[~peak_out].std() #ccf_clean[~peak_out].std()  #np.nanstd(noise)
 
             # when we subtract a specie we then want to check if the subtraction was effective (SNR~0), but to do that we set the weight to what obtained with the normal case
-            if(len(SUBTRACT)>0):
-                w_dict[f'{spectral_setting}.snr'] = SNR_sub.loc[f"{spectral_setting}.snr"].to_numpy()
-                w_dict[f'{spectral_setting}.chunk_ccfs'] = ccf_clean.copy()
-                if(ANTI_SNR):
-                    anti_w_dict[f'{spectral_setting}.snr'] = SNR_sub.loc[f"{spectral_setting}.snr"].to_numpy()
-                    anti_w_dict[f'{spectral_setting}.chunk_ccfs'] = anti_ccf_clean.copy()
+            # if(len(SUBTRACT)>0):
+            #     w_dict[f'{spectral_setting}.snr'] = SNR_sub.loc[f"{spectral_setting}.snr"].to_numpy()
+            #     w_dict[f'{spectral_setting}.chunk_ccfs'] = ccf_clean.copy()
+            #     if(ANTI_SNR):
+            #         anti_w_dict[f'{spectral_setting}.snr'] = SNR_sub.loc[f"{spectral_setting}.snr"].to_numpy()
+            #         anti_w_dict[f'{spectral_setting}.chunk_ccfs'] = anti_ccf_clean.copy()
             # normal behaviour
             else:
                 if not np.isfinite(snr) or snr < 0:
+                    print('now, snr is', snr)
+
                     w_dict[f'{spectral_setting}.snr'] = 0
                     w_dict[f'{spectral_setting}.chunk_ccfs'] = ccf_clean.copy()
                     if('H2O' in SPECIES): w_dict[f'{spectral_setting}.correction_factor'] = 0
@@ -519,28 +532,29 @@ with Task("Computing the weights..."):
             for k in w_dict
             if 'snr' in k
         ])
+        print('just before quitting, snr is', snr, 'sum of snr is', np.sum(snr) )
         snr_keys = [key for key in w_dict.keys() if 'snr' in key]
         for l, e in zip(snr_keys, snr): print(f"{l}: {e}") ## !!!
         # quitting if the SNR sum is equal to 0
         if(snr.sum()==0):
-            Message("Every observation produced SNR$\leq 0$", "i")
+            Message(r"Every observation produced SNR$\leq 0$", "i")
             quit()
         # ccf calculations
         for w, ccf_chunk in zip(snr**2, total_ccf):    # instead of snr/snr.sum()
             if(np.isnan(ccf_chunk[0])): continue
             ccf += w * ccf_chunk
-        if(ANTI_SNR):
-            anti_ccf = np.zeros_like(velocities)
-            anti_total_ccf = np.array([anti_w_dict[k] for k in anti_w_dict.keys() if 'chunk_ccfs' in k])
-            #snr = np.array([anti_w_dict[k] for k in anti_w_dict.keys() if 'snr' in k])
-            snr = np.array([
-                np.asarray(anti_w_dict[k]).item() if np.asarray(anti_w_dict[k]).size == 1 else anti_w_dict[k]
-                for k in anti_w_dict
-                if 'snr' in k
-            ])
-            for w, ccf_chunk in zip(snr**2, anti_total_ccf): # instead of snr/snr.sum()
-                if(np.isnan(ccf_chunk[0])): continue
-                anti_ccf += w * ccf_chunk
+        # if(ANTI_SNR):
+        #     anti_ccf = np.zeros_like(velocities)
+        #     anti_total_ccf = np.array([anti_w_dict[k] for k in anti_w_dict.keys() if 'chunk_ccfs' in k])
+        #     #snr = np.array([anti_w_dict[k] for k in anti_w_dict.keys() if 'snr' in k])
+        #     snr = np.array([
+        #         np.asarray(anti_w_dict[k]).item() if np.asarray(anti_w_dict[k]).size == 1 else anti_w_dict[k]
+        #         for k in anti_w_dict
+        #         if 'snr' in k
+        #     ])
+        #     for w, ccf_chunk in zip(snr**2, anti_total_ccf): # instead of snr/snr.sum()
+        #         if(np.isnan(ccf_chunk[0])): continue
+        #         anti_ccf += w * ccf_chunk
 
     # if we only have one we follow the normal procedure
     else:
@@ -717,7 +731,7 @@ plt.plot(velocities, anti_ccf[peak_in]/anti_ccf[~peak_out].std(), color='grey', 
 plt.xlabel(r'Velocity [$km\,s^{-1}$]')
 plt.ylabel('S/N')
 plt.legend(fontsize="x-large")
-plt.savefig(f"/srv/local/anba6163/plots/CCF_{SPECIES}_{vmr}.png")
+plt.savefig(f"/home/alst3712/exocomet_project/figs/CCF_{SPECIES}_{vmr}.png")
 if(SHOW): plt.show()
 
 ####
@@ -749,7 +763,7 @@ if(ANTI_SNR):
     fig.colorbar(sm, ax=ax, label="SNR")
     plt.legend(fontsize='xx-small')
     plt.grid()
-    plt.savefig(f"/srv/local/anba6163/plots/anti_CCF_{SPECIES}_{vmr}.png")
+    plt.savefig(f"/home/alst3712/exocomet_project/figs/anti_CCF_{SPECIES}_{vmr}.png")
     if(SHOW): plt.show()
 
 if(SHOW):

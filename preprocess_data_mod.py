@@ -5,7 +5,7 @@
 ##############
 #%%
 
-DEFAULT_FOLDER = "/home/alst3712/exocomet_project/toy_data/fake_data_1000K_1e+18_0.8cf_47.47SNR.dat" #where full data is?
+DEFAULT_FOLDER = "/home/alst3712/exocomet_project/clean_data" #where full data is?
 STD_TRESHOLD = 4
 PEAK_WIDTH = 2
 CHUNK_GAP_TRESHOLD = 1000 # will be multiplied by the average difference between two consecutive wavelengths
@@ -74,18 +74,27 @@ if os.path.isdir(file_or_folder):
     observation_labels = [folder for folder in os.listdir(crires_folder) if os.path.isdir(os.path.join(crires_folder, folder))]
     Message(f"Found {cstr(len(observation_labels)):c} observation folders in the folder {cstr(crires_folder):c}")
     observation_folder_paths = [os.path.join(crires_folder, obs_lbl) for obs_lbl in observation_labels]
-
+    print(observation_folder_paths)
     # get every file in all of these folders
-    all_files_to_preprocess = np.concatenate([ # contains full path to the file
-        [os.path.join(obs_folder_path, file) for file in os.listdir(obs_folder_path) if file.endswith(".dat")]
-        for obs_folder_path in observation_folder_paths
-    ])
+    # all_files_to_preprocess = np.concatenate([ # contains full path to the file
+    #     [os.path.join(obs_folder_path, file) for file in os.listdir(obs_folder_path) if file.endswith(".dat")]
+    #     for obs_folder_path in observation_folder_paths
+    # ])
 
+    all_files_to_preprocess = [
+    os.path.join(order_folder, file)
+    for obs_folder_path in observation_folder_paths
+    if os.path.isdir(order_folder := os.path.join(obs_folder_path, "order_regions"))
+    for file in os.listdir(order_folder)
+    if file.startswith("tellurics_corrected_version_")
+    and file.endswith(".dat")
+    ]
+    
     # sort them by pxl_number / observation label / date
-    all_files_to_preprocess = sorted(
-        all_files_to_preprocess,
-        key = lambda x: (len(os.path.basename(x)), os.path.basename(x), os.path.dirname(x).split("/")[-1].split("_")[1], os.path.dirname(x).split("/")[-1].split("_")[0])
-    )
+    # all_files_to_preprocess = sorted(
+    #     all_files_to_preprocess,
+    #     key = lambda x: (len(os.path.basename(x)), os.path.basename(x), os.path.dirname(x).split("/")[-1].split("_")[1], os.path.dirname(x).split("/")[-1].split("_")[0])
+    # )
 
     Message(f"Found {cstr(len(all_files_to_preprocess)):c} files to process.")
     Message.par()
@@ -94,7 +103,7 @@ if os.path.isdir(file_or_folder):
         for file in FancyIter(all_files_to_preprocess, new_line=True):
 
             FancyArg.subprocess(
-                pythonfile="scripts/preprocess_data.py",
+                pythonfile="preprocess_data_mod.py",
                 args={
                     "f": file,
                     "std_treshold": STD_TRESHOLD,
@@ -111,9 +120,13 @@ if os.path.isdir(file_or_folder):
     ### Goodbye ###
     ###############
 
-    suggest_next_command(
-        pythonfile="scripts/merge_observations.py",
-        args = {"f": crires_folder, "show": False}
+    # suggest_next_command(
+    #     pythonfile="scripts/merge_observations.py",
+    #     args = {"f": crires_folder, "show": False}
+    # )
+    print(
+    f"Next step: python scripts/merge_observations.py "
+    f"--f={crires_folder} --show=0"
     )
     exit(0)
 
@@ -133,9 +146,8 @@ if os.path.isdir(file_or_folder):
 filepath = file_or_folder
 filename = os.path.basename(filepath)
 output_filename = filename.replace(".dat","_preprocessed.csv")
-observation_folder = os.path.dirname(filepath).split("/")[-1]
-DATE = observation_folder.split("_")[0]
-BAND = observation_folder.split("_")[1]
+observation_folder = os.path.basename(os.path.dirname(os.path.dirname(filepath)))
+DATE, BAND = observation_folder.split("_", 1)
 
 Message(f"Observation: date='{cstr(DATE):y}', band='{Message.cstr(BAND):y}'", "?")
 Message(f"Output file: {cstr(output_filename):c}")
@@ -150,12 +162,19 @@ with Task("Preprocessing the data"):
 #changed here
     spectrum = pd.read_csv(
         filepath,
-        names = ['wavelength', 'flux', 'error'],
         dtype = np.float64,
-        sep = ',',
-        header = 0
+        sep = r'\s+',
+        comment='#',
+        names = ['wavelength', 'flux', 'error'],
+        header = None
     )
     Message("Data loaded")
+
+    print(filepath)
+    print(spectrum.head())
+    print(spectrum['wavelength'].min(), spectrum['wavelength'].max())
+    print(spectrum['flux'].min(), spectrum['flux'].max())
+
 
     spectrum_cleaned = spectrum.copy(deep=True)
     spectrum_cleaned = spectrum_cleaned[spectrum_cleaned['flux'].notna()]
@@ -168,14 +187,16 @@ with Task("Preprocessing the data"):
             assert len(stellar_dat_file) > 0, f"Unable to find a preprocessed stellar file in the folder: {cstr(stellar_obs_folder):r}. The file should be named {cstr('stellar_spectrum_cleaned.dat'):r} and be created by {cstr('locate_telluric_lines.py'):r}"
 
             star_filepath = os.path.join(stellar_obs_folder, stellar_dat_file[0])
-
+            
             stellar_spectrum = pd.read_csv(
                 star_filepath,
-                names = ['wavelength', 'flux'],
-                dtype = np.float64,
-                sep = ' ',
-                header = None
+                index_col=0,
+                dtype=np.float64,
+                sep=','
             )
+
+            stellar_spectrum = stellar_spectrum[['wavelength', 'flux']]
+
             spectrum_cleaned = spectrum_cleaned[
                 spectrum_cleaned['wavelength'].isin(stellar_spectrum['wavelength'])
             ].copy(deep=True)
