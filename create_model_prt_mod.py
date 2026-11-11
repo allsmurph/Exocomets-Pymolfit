@@ -28,27 +28,28 @@ BASELINE_KERNEL = 40 # nm # for IPSA # 20 is good to follow a bit the oscillatio
 #flux must be in cgs I think, but maybe it doesn't matter?
 import glob
 
-# model_files = glob.glob('Opacity_spectra/CO_absorptions/CO_model_*.csv')
+model_files = glob.glob('Opacity_spectra/CO_absorptions/CO_model_*.csv')
 
-# models = []
+models = []
 
-# for file in model_files:
-#     model = pd.read_csv(file)
-#     model = (
-#         model
-#         .replace([np.inf, -np.inf], np.nan)
-#         .dropna(subset=['wavelength', 'flux'])
-#         .sort_values('wavelength')
-#         .drop_duplicates(subset='wavelength', keep='first'))
-#     models.append(model)
+for file in model_files:
+    model = pd.read_csv(file)
+    model = (
+        model
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna(subset=['wavelength', 'flux'])
+        .sort_values('wavelength')
+        .drop_duplicates(subset='wavelength', keep='first'))
+    models.append(model)
 
-# for model_data in models:
-#     wavelengths = model_data['wavelength']
-#     flux = model_data['flux']
+for model_data in models:
+    wavelengths = model_data['wavelength']
+    flux = model_data['flux']
 
 
-file = Path('/home/alst3712/exocomet_project/Opacity_spectra/CO_absorptions/CO_model_1000K_1e+18_0.9cf.csv')
-model = pd.read_csv(file)
+#file = Path('/home/alst3712/exocomet_project/Opacity_spectra/CO_absorptions/CO_model_100K_1e+17_0.8cf.csv')
+#file = Path('/home/alst3712/exocomet_project/Opacity_spectra/CO_absorptions/CO_model_1000K_1e+17_0.9cf.csv')
+#model = pd.read_csv(file)
 output_name = file.with_name(file.stem + '_weighted.csv')
 
 
@@ -70,6 +71,18 @@ with Task(f"Removing the baseline with {cstr('IPSA'):b}...", new_line = False):
     )
 
     spectrum_model["flux.no_baseline"] = spectrum_model["flux"] - baseline
+    spectrum_model["baseline"] = baseline
+
+# ########################
+# ### Normalise residuals #
+# ########################
+
+residual = spectrum_model['flux.no_baseline']
+
+spectrum_model['flux.no_baseline.deviation'] = (
+    residual - residual.mean()
+) / residual.std()
+
 
 ##################################
 ### Compute information weight ###
@@ -81,16 +94,21 @@ with Task(f"Removing the baseline with {cstr('IPSA'):b}...", new_line = False):
 
 step = spectrum_model["wavelength"].diff().median()
 #contrast_no_baseline = spectrum['contrast']-baseline/stellar_spectrum['flux']
-spectrum_model['weight'] = spectrum_model['flux'].diff().abs().fillna(0) # first weight is NaN because of diff
+
+#spectrum_model['weight'] = spectrum_model['flux'].diff().abs().fillna(0) # first weight is NaN because of diff
+### BASE WEIGHTS ON NO_BASELINE, SO THAT ONLY THE LINES PLAY A ROLE!!
+spectrum_model['weight'] = spectrum_model['flux.no_baseline'].diff().abs().fillna(0)
 
 # smooth out the result
+window = int(5/step)
+
 spectrum_model['weight.smooth'] = spectrum_model['weight'].rolling(
-    int(5 / step), # 5nm window
+    window, # 5nm window
     center=True
 ).sum().fillna(0)
 
 spectrum_model['weight.smooth'] = spectrum_model['weight.smooth'].rolling(
-    int(5 / step),
+    window,
     center=True
 ).median().fillna(0)
 
@@ -98,6 +116,10 @@ spectrum_model['weight.smooth'] = spectrum_model['weight.smooth'].rolling(
 spectrum_model['weight'] /= spectrum_model['weight'].std()
 spectrum_model['weight.smooth'] /= spectrum_model['weight.smooth'].std()
 spectrum_model['weight.mask'] = (spectrum_model['weight.smooth'] > INFO_TRESHOLD).astype(int)
+
+#######################
+### Save the result ###
+#######################
 
 spectrum_model.to_csv(output_name, index=False)
 
