@@ -5,6 +5,7 @@ import numpy as np
 # from utils.cross_correlation_tools import cross_correlate
 # #from cross_correlation_mod import cross_correlate
 import matplotlib.pyplot as plt
+from scipy.ndimage import binary_dilation
 # import glob
 # import re
 
@@ -31,16 +32,17 @@ model = pd.read_csv(f'/home/alst3712/exocomet_project/Opacity_spectra/CO_absorpt
 
 spectrum_sorted = (
     spectrum
-    .replace([np.inf, -np.inf], np.nan)
-    .dropna(subset=['wavelength', 'flux.deviation'])
+    #.replace([np.inf, -np.inf], np.nan)
+    #.dropna(subset=['wavelength', 'flux.deviation'])
     .sort_values('wavelength')
-    .drop_duplicates(subset='wavelength', keep='first')
-    .reset_index(drop=True)
+    #.drop_duplicates(subset='wavelength', keep='first')
+    #.reset_index(drop=True)
 )
+
 plt.plot(spectrum_sorted['wavelength'], spectrum_sorted['flux.deviation'], label='tellurics corrected spectrum')
-plt.plot(model['wavelength'], model['flux']-1, label='CO model')
+plt.plot(model['wavelength'], model['flux'], label='CO model')
 plt.xlim(4680, 4780)
-plt.ylim(-4, 1)
+#plt.ylim(-4, 2)
 plt.legend()
 plt.title(f'2022-04-11_M4368 spectrum and {T} K CO model')
 plt.xlabel('Wavelength (nm)')
@@ -273,15 +275,45 @@ def prepare_chunk(ch):
     if not np.isfinite(sig) or sig <= 0:
         return None
     err = ch['err']
+
+    sigma_lim = 3
+    hot_wl = ch['wl'][(fl > np.median(fl) + sigma_lim * sig) & (err > 0)]
+
     keep = np.isfinite(err) & (err > 0) & (fl < np.median(fl) + CLIP_SIGMA * sig)  # positive outliers only: don't clip real lines
     if keep.sum() < 50:
         return None
     corr = 0
     wl = ch['wl'][keep]
     return dict(label=ch['label'], obs=ch['obs'], wl=wl, wl_corr=wl / (1 + corr / C_KMS),
-                flux=fl[keep], err=err[keep], sigma_emp=sig)
+                flux=fl[keep], err=err[keep], sigma_emp=sig,
+                hot_wl=hot_wl, all_wl=ch['wl'])
 
+TELL_MIN_NIGHTS = 2       # flagged in at least this many nights...
+TELL_MIN_FRAC = 0.5       # ...and at least this fraction of the nights covering that wavelength
+TELL_PAD_KMS = 10         # widen each flagged region by this much on either side
 
+def build_telluric_mask(chunks):
+    """Returns keep(wl) -> True for pixels NOT at a wavelength that is repeatedly 'hot' across nights."""
+    wmin = min(c['all_wl'].min() for c in chunks)
+    wmax = max(c['all_wl'].max() for c in chunks)
+    dlam = 0.5 * np.mean([wmin, wmax]) / (RESOLUTION or 1e5)       # half a resolution element
+    nb = int((wmax - wmin) / dlam) + 2
+    obs = sorted({c['obs'] for c in chunks})
+    flagged = {o: np.zeros(nb, bool) for o in obs}
+    covered = {o: np.zeros(nb, bool) for o in obs}
+    for c in chunks:
+        covered[c['obs']][((c['all_wl'] - wmin) / dlam).astype(int)] = True
+        if len(c['hot_wl']):
+            flagged[c['obs']][((c['hot_wl'] - wmin) / dlam).astype(int)] = True
+    n_flag = sum(f.astype(int) for f in flagged.values())
+    n_cov = sum(c.astype(int) for c in covered.values())
+    bad = (n_flag >= TELL_MIN_NIGHTS) & (n_flag >= TELL_MIN_FRAC * n_cov)
+    pad = max(1, int(np.ceil((0.5 * (wmin + wmax)) * TELL_PAD_KMS / C_KMS / dlam))) #turn pad to n_boxes
+    bad = binary_dilation(bad, iterations=pad) #make every true region bigger by one "box" per side per iteration
+    print(f'[telluric mask] {bad.mean():.1%} of the wavelength range masked '
+          f'(from {len(obs)} nights)')
+
+    return lambda wl: ~bad[((wl - wmin) / dlam).astype(int).clip(0, nb - 1)]
 
 def load_model(path):
     """-> (wavelength, feature) with absorption as negative dips around ~0."""
@@ -297,9 +329,10 @@ def load_model(path):
     return wl, f
 
 
-wl, f = load_model('Opacity_spectra/CO_absorptions/CO_model_1000K_1e+17_0.9cf.csv')
+wl, f = load_model('Opacity_spectra/CO_absorptions/CO_model_10K_1e+17_0.9cf.csv')
 print(abs(f.max()), abs(f.min()))
-plt.plot(wl,f)  # test load
+plt.plot(wl,f)  # test
+
 # =============================================================================
 # CORE
 # =============================================================================
@@ -324,10 +357,11 @@ def chunk_ccf(wl, d, err, mw, mf, velocities=None):
     return N, D
 
 def model_for_chunk(mwl, mfeat, wl):
-    """Crop the model to the chunk (+ velocity margin)"""
+    """Crop the model to the chunk (+ velocity margin) => for faster computations"""
+    #convert the velocity range to a wavelength margin
     margin = 1.5 * np.max(np.abs(VELOCITIES)) / C_KMS + 1e-4
-    sel = (mwl > wl.min() * (1 - margin)) & (mwl < wl.max() * (1 + margin))
-    w, f = mwl[sel], mfeat[sel]
+    mask = (mwl > wl.min() * (1 - margin)) & (mwl < wl.max() * (1 + margin))
+    w, f = mwl[mask], mfeat[mask]
     if len(w) < 10:
         return None
     return w, f
@@ -345,7 +379,12 @@ def run_model(chunks, model_path, inject_v=None):
         d = ch['flux'].copy()
         if inject_v is not None:
             d = d + np.interp(ch['wl_corr'], mw * (1 + inject_v / C_KMS), mf, left=0.0, right=0.0)
-        N, D = chunk_ccf(ch['wl_corr'], d, ch['err'], mw, mf)
+
+        wl, err = ch['wl_corr'], ch['err']
+        if TELL_KEEP is not None:
+            wl, d, err = wl[TELL_KEEP(wl)], d[TELL_KEEP(wl)], err[TELL_KEEP(wl)]
+            plt.plot(wl, d)
+        N, D = chunk_ccf(wl, d, err, mw, mf)
 
         #this is where chunks are combined per observation (night) - the N and D arrays are summed up for all chunks of the same night
         acc = per_obs.setdefault(ch['obs'], [np.zeros(len(VELOCITIES)), np.zeros(len(VELOCITIES))])
@@ -405,6 +444,7 @@ def plot_nights(name, per_obs, out_dir):
         ax.text(0.01, 0.95, f'{k} -- peak: {vpeak:.1f} km/s',
                 transform=ax.transAxes, fontsize=10, va='top')
         ax.axvline(16.84, color='navy', linestyle=':', lw=1.5, alpha=0.99, label='stellar RV')
+        ax.axvline(0, color='k', linestyle='--', lw=1.5, alpha=0.99, label='model rest frame')
         ax.set_ylabel('norm S/N', fontsize=12)
     axs[0].legend()
     axs[-1].set_xlabel('Velocity [km/s]')
@@ -419,10 +459,11 @@ def plot_nights(name, per_obs, out_dir):
     ax.set(xlabel='Velocity [km/s]', ylabel='norm S/N',
         title=f'All nights, model {short}')
     ax.axvline(16.84, color='navy', linestyle=':', lw=1.5, alpha=0.99, label='stellar RV')
+    ax.axvline(0, color='k', linestyle='--', lw=1.5, alpha=0.99, label='model rest frame')
     ax.legend(fontsize=12)
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    plt.ylim(-5, 30)
+    plt.ylim(0, 10)
     fig.savefig(f'{out_dir}/nights_ccf_overlay_{short}.png', dpi=150)
 
     # # 2) night-by-night map
@@ -455,6 +496,7 @@ def plot_nights(name, per_obs, out_dir):
 # MAIN
 # =============================================================================
 def main():
+    global TELL_KEEP
     os.makedirs(OUT_DIR, exist_ok=True)
     raw = []
     for f in OBS_FILES:
@@ -462,6 +504,7 @@ def main():
         print(f'{os.path.basename(f)}: {len(c)} chunks')
         raw += c
     chunks = [c for c in (prepare_chunk(r) for r in raw) if c is not None]
+    TELL_KEEP = build_telluric_mask(chunks)
     obs_keys = sorted({c['obs'] for c in chunks})
     print(f'{len(chunks)} usable chunks in {len(obs_keys)} observations: {obs_keys}')
     if not chunks or not MODEL_FILES:
@@ -506,4 +549,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-# %%
